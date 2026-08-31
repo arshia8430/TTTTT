@@ -398,44 +398,6 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef* hpcd)
 
 }
 
-/**
-  * @brief TIM2 MSP Initialization (peripheral clock only; GPIO is done in
-  *        HAL_TIM_MspPostInit once the channel/PWM config is known)
-  * @param htim: TIM handle pointer
-  * @retval None
-  */
-void HAL_TIM_PWM_MspInit(TIM_HandleTypeDef* htim_pwm)
-{
-  if (htim_pwm->Instance == TIM2)
-  {
-    __HAL_RCC_TIM2_CLK_ENABLE();
-  }
-}
-
-/**
-  * @brief TIM2 MSP Post-Initialization - PA5 as TIM2_CH1 (AF1), the OV7670
-  *        XCLK line.
-  * @param htim: TIM handle pointer
-  * @retval None
-  */
-void HAL_TIM_MspPostInit(TIM_HandleTypeDef* htim)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  if (htim->Instance == TIM2)
-  {
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    /**TIM2 GPIO Configuration
-    PA5     ------> TIM2_CH1 (OV7670 XCLK)
-    */
-    GPIO_InitStruct.Pin = GPIO_PIN_5;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-  }
-}
-
 /* USER CODE BEGIN 1 */
 
 /* USER CODE END 1 */
