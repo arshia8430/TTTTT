@@ -49,13 +49,6 @@ I2C_HandleTypeDef hi2c3;
 
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
-UART_HandleTypeDef huart1;
-
-/* Generates the OV7670's XCLK input (PA5, TIM2_CH1) - the sensor has no
- * onboard oscillator and will not respond on SCCB, let alone output
- * PCLK/HSYNC/VSYNC, until this clock is running. */
-TIM_HandleTypeDef htim2;
-
 /* USER CODE BEGIN PV */
 /* Frame buffer deliberately placed at a fixed SRAM1 address, NOT a normal
  * .bss array, so it can never end up in DTCM (see main.h for why). */
@@ -81,7 +74,7 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 static void CameraSendFrame_UART(void);
-void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+static void USART1_Write(const uint8_t *data, uint32_t length);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -132,10 +125,6 @@ int main(void)
   /* Start XCLK (PA5, ~12 MHz) before touching the camera at all: the OV7670
    * needs this clock running before it will ACK on SCCB, and long before it
    * can produce PCLK/HSYNC/VSYNC. */
-  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
   HAL_Delay(10);
 
 #ifdef CONNECTOR_PIN5_TEST
@@ -362,18 +351,30 @@ static void MX_I2C3_Init(void)
   */
 static void MX_USART1_UART_Init(void)
 {
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 921600;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_USART1_CLK_ENABLE();
+
+  /* USART1 uses PA9 (TX) and PB7 (RX), both alternate function 7. */
+  GPIO_InitStruct.Pin = GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* PCLK2 is 108 MHz. With 16x oversampling, BRR = 108 MHz / 921600,
+   * rounded to the nearest integer (117). */
+  USART1->CR1 = 0U;
+  USART1->CR2 = 0U;
+  USART1->CR3 = 0U;
+  USART1->BRR = (108000000U + (921600U / 2U)) / 921600U;
+  USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
 }
 
 /**
@@ -422,31 +423,28 @@ static void MX_USB_OTG_FS_PCD_Init(void)
   */
 static void MX_TIM2_Init(void)
 {
-  TIM_OC_InitTypeDef sConfigOC = {0};
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   __HAL_RCC_TIM2_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
 
-  htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
-  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 8;
-  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  GPIO_InitStruct.Pin = GPIO_PIN_5;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 4;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  HAL_TIM_MspPostInit(&htim2);
+  /* TIM2 runs from APB1's doubled 108 MHz timer clock.  PSC=0 and ARR=8
+   * produce a 12 MHz XCLK; CCR1=4 gives a near-50% duty cycle. */
+  TIM2->CR1 = 0U;
+  TIM2->PSC = 0U;
+  TIM2->ARR = 8U;
+  TIM2->CCR1 = 4U;
+  TIM2->CCMR1 = (6U << TIM_CCMR1_OC1M_Pos) | TIM_CCMR1_OC1PE;
+  TIM2->CCER = TIM_CCER_CC1E;
+  TIM2->EGR = TIM_EGR_UG;
+  TIM2->CR1 = TIM_CR1_ARPE | TIM_CR1_CEN;
 }
 
 /**
@@ -536,9 +534,25 @@ static void CameraSendFrame_UART(void)
   size_hdr[2] = (uint8_t)(CAMERA_FRAME_HEIGHT & 0xFF);
   size_hdr[3] = (uint8_t)((CAMERA_FRAME_HEIGHT >> 8) & 0xFF);
 
-  HAL_UART_Transmit(&huart1, (uint8_t *)frame_header, sizeof(frame_header), 100);
-  HAL_UART_Transmit(&huart1, size_hdr, sizeof(size_hdr), 100);
-  HAL_UART_Transmit(&huart1, camera_frame_buffer, CAMERA_FRAME_SIZE, 5000);
+  USART1_Write(frame_header, sizeof(frame_header));
+  USART1_Write(size_hdr, sizeof(size_hdr));
+  USART1_Write(camera_frame_buffer, CAMERA_FRAME_SIZE);
+}
+
+/**
+ * @brief Send bytes synchronously through USART1.
+ * @note TXE only signals that the data register is empty, which permits the
+ *       next byte to be queued while the previous byte is shifting out.
+ */
+static void USART1_Write(const uint8_t *data, uint32_t length)
+{
+  while (length-- != 0U)
+  {
+    while ((USART1->ISR & USART_ISR_TXE) == 0U)
+    {
+    }
+    USART1->TDR = *data++;
+  }
 }
 
 /* USER CODE END 4 */
